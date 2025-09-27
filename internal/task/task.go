@@ -1,7 +1,18 @@
 package task
 
-// Task represents a file copy from Src to Dst.
+// Action represents the type of work to perform for a task.
+type Action int
+
+const (
+	// ActionCopy copies a file from Src to Dst.
+	ActionCopy Action = iota
+	// ActionDelete removes the path at Dst.
+	ActionDelete
+)
+
+// Task represents work to be completed by the worker pool.
 type Task struct {
-	Src string
-	Dst string
+	Action Action
+	Src    string
+	Dst    string
 }
