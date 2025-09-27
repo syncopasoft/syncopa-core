@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"migratool/internal/task"
 )
@@ -15,14 +16,17 @@ import (
 type Pool struct {
 	Workers int
 	Verbose bool
+	// BandwidthLimit limits the number of bytes per second used when copying files.
+	// A value <= 0 disables throttling.
+	BandwidthLimit int64
 }
 
 // New creates a new worker pool.
-func New(workers int, verbose bool) *Pool {
+func New(workers int, verbose bool, bandwidthLimit int64) *Pool {
 	if workers <= 0 {
 		workers = 1
 	}
-	return &Pool{Workers: workers, Verbose: verbose}
+	return &Pool{Workers: workers, Verbose: verbose, BandwidthLimit: bandwidthLimit}
 }
 
 // Run starts the worker pool and processes tasks from the channel.
@@ -56,7 +60,7 @@ func (p *Pool) handleTask(t task.Task) error {
 		if p.Verbose {
 			log.Printf("copy %s -> %s", t.Src, t.Dst)
 		}
-		return copyFile(t.Src, t.Dst)
+		return p.copyFile(t.Src, t.Dst)
 	case task.ActionDelete:
 		if p.Verbose {
 			log.Printf("delete %s", t.Dst)
@@ -67,7 +71,7 @@ func (p *Pool) handleTask(t task.Task) error {
 	}
 }
 
-func copyFile(src, dst string) error {
+func (p *Pool) copyFile(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -83,8 +87,51 @@ func copyFile(src, dst string) error {
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, in)
+	_, err = copyWithBandwidth(out, in, p.BandwidthLimit)
 	return err
+}
+
+func copyWithBandwidth(dst io.Writer, src io.Reader, limit int64) (int64, error) {
+	if limit <= 0 {
+		return io.Copy(dst, src)
+	}
+
+	bufSize := 32 * 1024
+	if limit > 0 && int64(bufSize) > limit {
+		bufSize = int(limit)
+		if bufSize == 0 {
+			bufSize = 1
+		}
+	}
+
+	buf := make([]byte, bufSize)
+	start := time.Now()
+	var written int64
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			expectedDuration := time.Duration(float64(written+int64(n)) * float64(time.Second) / float64(limit))
+			elapsed := time.Since(start)
+			if expectedDuration > elapsed {
+				time.Sleep(expectedDuration - elapsed)
+			}
+
+			wn, writeErr := dst.Write(buf[:n])
+			written += int64(wn)
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if wn != n {
+				return written, io.ErrShortWrite
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return written, nil
+			}
+			return written, readErr
+		}
+	}
 }
 
 func deletePath(path string) error {
