@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -30,70 +32,125 @@ func New(workers int, verbose bool, bandwidthLimit int64) *Pool {
 }
 
 // Run starts the worker pool and processes tasks from the channel.
-func (p *Pool) Run(tasks <-chan task.Task) error {
-	var wg sync.WaitGroup
+func (p *Pool) Run(tasks <-chan task.Task) (*Report, error) {
+	report := newReport()
+	results := make(chan *TaskReport, p.Workers)
+	var collector sync.WaitGroup
+	collector.Add(1)
+	go func() {
+		defer collector.Done()
+		for res := range results {
+			report.add(res)
+		}
+	}()
+
 	errs := make(chan error, p.Workers)
+	var wg sync.WaitGroup
 	for i := 0; i < p.Workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for t := range tasks {
-				if err := p.handleTask(t); err != nil {
+				res, err := p.handleTask(t)
+				if err != nil {
 					errs <- err
+					continue
+				}
+				if res != nil {
+					results <- res
 				}
 			}
 		}()
 	}
+
 	wg.Wait()
+	close(results)
+	collector.Wait()
 	close(errs)
+
+	var firstErr error
 	for err := range errs {
-		if err != nil {
-			return err
+		if err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	return nil
+	report.markComplete()
+
+	if firstErr != nil {
+		return report, firstErr
+	}
+	return report, nil
 }
 
-func (p *Pool) handleTask(t task.Task) error {
+func (p *Pool) handleTask(t task.Task) (*TaskReport, error) {
 	switch t.Action {
 	case task.ActionCopy:
 		if p.Verbose {
 			log.Printf("copy %s -> %s", t.Src, t.Dst)
 		}
-		return p.copyFile(t.Src, t.Dst)
+		start := time.Now()
+		bytes, hash, err := p.copyFile(t.Src, t.Dst)
+		duration := time.Since(start)
+		if err != nil {
+			return nil, err
+		}
+		return &TaskReport{
+			Action:      t.Action,
+			Source:      t.Src,
+			Destination: t.Dst,
+			Bytes:       bytes,
+			Hash:        hash,
+			StartedAt:   start,
+			Duration:    duration,
+		}, nil
 	case task.ActionDelete:
 		if p.Verbose {
 			log.Printf("delete %s", t.Dst)
 		}
-		return deletePath(t.Dst)
+		start := time.Now()
+		if err := deletePath(t.Dst); err != nil {
+			return nil, err
+		}
+		return &TaskReport{
+			Action:      t.Action,
+			Destination: t.Dst,
+			StartedAt:   start,
+			Duration:    time.Since(start),
+		}, nil
 	default:
-		return fmt.Errorf("unknown task action: %d", t.Action)
+		return nil, fmt.Errorf("unknown task action: %d", t.Action)
 	}
 }
 
-func (p *Pool) copyFile(src, dst string) error {
+func (p *Pool) copyFile(src, dst string) (int64, string, error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+		return 0, "", err
 	}
 	in, err := os.Open(src)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	defer in.Close()
 
 	out, err := os.Create(dst)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	defer out.Close()
 
-	_, err = copyWithBandwidth(out, in, p.BandwidthLimit)
-	return err
+	written, hash, err := copyWithBandwidth(out, in, p.BandwidthLimit)
+	return written, hash, err
 }
 
-func copyWithBandwidth(dst io.Writer, src io.Reader, limit int64) (int64, error) {
+func copyWithBandwidth(dst io.Writer, src io.Reader, limit int64) (int64, string, error) {
 	if limit <= 0 {
-		return io.Copy(dst, src)
+		hasher := sha256.New()
+		mw := io.MultiWriter(dst, hasher)
+		written, err := io.Copy(mw, src)
+		if err != nil {
+			return written, "", err
+		}
+		return written, hex.EncodeToString(hasher.Sum(nil)), nil
 	}
 
 	bufSize := 32 * 1024
@@ -106,6 +163,7 @@ func copyWithBandwidth(dst io.Writer, src io.Reader, limit int64) (int64, error)
 
 	buf := make([]byte, bufSize)
 	start := time.Now()
+	hasher := sha256.New()
 	var written int64
 	for {
 		n, readErr := src.Read(buf)
@@ -116,20 +174,24 @@ func copyWithBandwidth(dst io.Writer, src io.Reader, limit int64) (int64, error)
 				time.Sleep(expectedDuration - elapsed)
 			}
 
-			wn, writeErr := dst.Write(buf[:n])
+			chunk := buf[:n]
+			if _, hashErr := hasher.Write(chunk); hashErr != nil {
+				return written, "", hashErr
+			}
+			wn, writeErr := dst.Write(chunk)
 			written += int64(wn)
 			if writeErr != nil {
-				return written, writeErr
+				return written, "", writeErr
 			}
 			if wn != n {
-				return written, io.ErrShortWrite
+				return written, "", io.ErrShortWrite
 			}
 		}
 		if readErr != nil {
 			if readErr == io.EOF {
-				return written, nil
+				return written, hex.EncodeToString(hasher.Sum(nil)), nil
 			}
-			return written, readErr
+			return written, "", readErr
 		}
 	}
 }
