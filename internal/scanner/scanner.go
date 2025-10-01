@@ -71,10 +71,13 @@ func Scan(src, dst string, includeDir bool, mode Mode, tasks chan<- task.Task) e
 
 	srcFiles := make(map[string]fileMeta, len(srcSnap.Files))
 	srcDirs := make(map[string]fileMeta, len(srcSnap.Dirs))
+	srcFileKeys := make([]string, 0, len(srcSnap.Files))
 	for rel, meta := range srcSnap.Files {
 		key := withPrefix(base, rel, includeDir)
 		srcFiles[key] = meta
+		srcFileKeys = append(srcFileKeys, key)
 	}
+	sort.Strings(srcFileKeys)
 	for rel, meta := range srcSnap.Dirs {
 		key := withPrefix(base, rel, includeDir)
 		srcDirs[key] = meta
@@ -82,16 +85,20 @@ func Scan(src, dst string, includeDir bool, mode Mode, tasks chan<- task.Task) e
 
 	dstFiles := make(map[string]fileMeta, len(dstSnap.Files))
 	dstDirs := make(map[string]fileMeta, len(dstSnap.Dirs))
+	dstFileKeys := make([]string, 0, len(dstSnap.Files))
 	for rel, meta := range dstSnap.Files {
 		key := withPrefix(base, rel, includeDir)
 		dstFiles[key] = meta
+		dstFileKeys = append(dstFileKeys, key)
 	}
+	sort.Strings(dstFileKeys)
 	for rel, meta := range dstSnap.Dirs {
 		key := withPrefix(base, rel, includeDir)
 		dstDirs[key] = meta
 	}
 
-	for key, srcMeta := range srcFiles {
+	for _, key := range srcFileKeys {
+		srcMeta := srcFiles[key]
 		dstPath := filepath.Join(cleanDst, key)
 		dstMeta, exists := dstFiles[key]
 		if !exists {
@@ -107,7 +114,7 @@ func Scan(src, dst string, includeDir bool, mode Mode, tasks chan<- task.Task) e
 	case ModeMirror:
 		enqueueMirrorDeletes(cleanDst, dstFiles, dstDirs, srcFiles, srcDirs, tasks)
 	case ModeSync:
-		enqueueSyncTasks(cleanSrc, cleanDst, base, includeDir, srcFiles, dstFiles, tasks)
+		enqueueSyncTasks(cleanSrc, cleanDst, base, includeDir, srcFiles, dstFiles, srcFileKeys, dstFileKeys, tasks)
 	}
 
 	return nil
@@ -136,8 +143,9 @@ func enqueueMirrorDeletes(cleanDst string, dstFiles, dstDirs, srcFiles, srcDirs 
 	}
 }
 
-func enqueueSyncTasks(cleanSrc, cleanDst, base string, includeDir bool, srcFiles, dstFiles map[string]fileMeta, tasks chan<- task.Task) {
-	for key, dstMeta := range dstFiles {
+func enqueueSyncTasks(cleanSrc, cleanDst, base string, includeDir bool, srcFiles, dstFiles map[string]fileMeta, srcKeys, dstKeys []string, tasks chan<- task.Task) {
+	for _, key := range dstKeys {
+		dstMeta := dstFiles[key]
 		if _, ok := srcFiles[key]; ok {
 			continue
 		}
@@ -148,7 +156,8 @@ func enqueueSyncTasks(cleanSrc, cleanDst, base string, includeDir bool, srcFiles
 		tasks <- task.Task{Action: task.ActionCopy, Src: dstMeta.Path, Dst: srcPath}
 	}
 
-	for key, srcMeta := range srcFiles {
+	for _, key := range srcKeys {
+		srcMeta := srcFiles[key]
 		dstMeta, ok := dstFiles[key]
 		if !ok {
 			continue
