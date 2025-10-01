@@ -44,6 +44,12 @@ func newReport() *Report {
 	return &Report{StartedAt: time.Now()}
 }
 
+// NewReport creates an empty report. It is primarily used by distributed
+// orchestrators that collect task results from remote agents.
+func NewReport() *Report {
+	return newReport()
+}
+
 func (r *Report) add(res *TaskReport) {
 	if res == nil {
 		return
@@ -67,6 +73,19 @@ func (r *Report) markComplete() {
 	sort.Slice(r.deletes, func(i, j int) bool {
 		return r.deletes[i].Destination < r.deletes[j].Destination
 	})
+}
+
+// Finalize freezes the report, computing derived statistics and marking it as
+// complete.
+func (r *Report) Finalize() {
+	r.markComplete()
+}
+
+// Record inserts a task report into the aggregate. It mirrors the behaviour of
+// the internal add helper but is exported for distributed orchestrators that
+// receive task outcomes from remote agents.
+func (r *Report) Record(res *TaskReport) {
+	r.add(res)
 }
 
 // Duration returns the total time spent for the run.
