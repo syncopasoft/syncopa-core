@@ -104,6 +104,14 @@ func (e *Executor) copyFile(src, dst string) (int64, string, error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return 0, "", err
 	}
+	if e.BandwidthLimit <= 0 {
+		if written, hash, used, err := tryZeroCopy(src, dst); err != nil {
+			return written, hash, err
+		} else if used {
+			return written, hash, nil
+		}
+	}
+
 	in, err := os.Open(src)
 	if err != nil {
 		return 0, "", err
