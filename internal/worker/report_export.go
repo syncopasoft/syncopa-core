@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"migratool/internal/task"
 )
 
 // WriteCSV serialises the report details into CSV format. The output contains
@@ -33,7 +35,7 @@ func (r *Report) WriteCSV(w io.Writer) error {
 		{"summary", "start", formatTimestamp(r.StartedAt)},
 		{"summary", "end", formatTimestamp(r.CompletedAt)},
 		{"summary", "duration_seconds", formatFloat(r.Duration().Seconds(), 3)},
-		{"summary", "copied_files", strconv.Itoa(len(r.copies))},
+		{"summary", "copied_files", strconv.Itoa(r.copiedFileCount())},
 		{"summary", "deleted_files", strconv.Itoa(len(r.deletes))},
 		{"summary", "bytes_copied", strconv.FormatInt(r.totalBytes, 10)},
 		{"summary", "average_bytes_per_second", formatFloat(r.AverageSpeedBytes(), 2)},
@@ -55,7 +57,7 @@ func (r *Report) WriteCSV(w io.Writer) error {
 
 	for _, copy := range r.copies {
 		record := []string{
-			"copy",
+			actionLabel(copy.Action),
 			copy.Source,
 			copy.Destination,
 			strconv.FormatInt(copy.Bytes, 10),
@@ -72,7 +74,7 @@ func (r *Report) WriteCSV(w io.Writer) error {
 
 	for _, del := range r.deletes {
 		record := []string{
-			"delete",
+			actionLabel(task.ActionDelete),
 			del.Source,
 			del.Destination,
 			"",
@@ -145,7 +147,7 @@ func (r *Report) pdfLines() []string {
 		fmt.Sprintf("End: %s", formatTimestamp(r.CompletedAt)),
 		fmt.Sprintf("Duration: %s", r.Duration()),
 		"",
-		fmt.Sprintf("Files copied: %d", len(r.copies)),
+		fmt.Sprintf("Files copied: %d", r.copiedFileCount()),
 		fmt.Sprintf("Files deleted: %d", len(r.deletes)),
 		fmt.Sprintf("Bytes copied: %s", formatBytes(r.totalBytes)),
 		fmt.Sprintf("Average speed: %s/s", formatBytesPerSecond(r.AverageSpeedBytes())),
@@ -199,6 +201,19 @@ func formatTimestamp(t time.Time) string {
 		return "n/a"
 	}
 	return t.Format(time.RFC3339)
+}
+
+func actionLabel(action task.Action) string {
+	switch action {
+	case task.ActionCopy:
+		return "copy"
+	case task.ActionCopyBatch:
+		return "copy_batch"
+	case task.ActionDelete:
+		return "delete"
+	default:
+		return fmt.Sprintf("action_%d", action)
+	}
 }
 
 func formatFloat(v float64, precision int) string {

@@ -32,7 +32,7 @@ func TestScanDeterministicOrderUpdate(t *testing.T) {
 	var previousOrder []string
 	for i := 0; i < 3; i++ {
 		tasksCh := make(chan task.Task, len(expected))
-		if err := Scan(srcDir, dstDir, false, ModeUpdate, tasksCh); err != nil {
+		if err := Scan(srcDir, dstDir, false, ModeUpdate, Options{}, tasksCh); err != nil {
 			t.Fatalf("scan failed: %v", err)
 		}
 		close(tasksCh)
@@ -47,6 +47,65 @@ func TestScanDeterministicOrderUpdate(t *testing.T) {
 		}
 		if !reflect.DeepEqual(previousOrder, got) {
 			t.Fatalf("non-deterministic order: got %v want %v", got, previousOrder)
+		}
+	}
+}
+
+func TestScanEmitsCopyBatch(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	files := map[string]string{
+		"a.txt":        "alpha",
+		"nested/b.txt": "bravo",
+		"nested/c.txt": "charlie",
+	}
+	for rel, contents := range files {
+		writeTestFile(t, srcDir, rel, contents)
+	}
+
+	tasksCh := make(chan task.Task, len(files))
+	opts := Options{BatchThreshold: 1024, BatchMaxFiles: 10, BatchMaxBytes: 4096}
+	if err := Scan(srcDir, dstDir, false, ModeUpdate, opts, tasksCh); err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	close(tasksCh)
+
+	var tasks []task.Task
+	for task := range tasksCh {
+		tasks = append(tasks, task)
+	}
+
+	if len(tasks) != 1 {
+		t.Fatalf("expected a single batch task, got %d", len(tasks))
+	}
+	batchTask := tasks[0]
+	if batchTask.Action != task.ActionCopyBatch {
+		t.Fatalf("unexpected action: got %v want %v", batchTask.Action, task.ActionCopyBatch)
+	}
+	if batchTask.Batch == nil {
+		t.Fatal("batch payload missing")
+	}
+	if len(batchTask.Batch.Entries) != len(files) {
+		t.Fatalf("unexpected entry count: got %d want %d", len(batchTask.Batch.Entries), len(files))
+	}
+	if len(batchTask.Batch.Archive) == 0 {
+		t.Fatal("batch archive is empty")
+	}
+
+	seen := make(map[string]task.CopyBatchEntry)
+	for _, entry := range batchTask.Batch.Entries {
+		seen[entry.Destination] = entry
+	}
+
+	for rel, contents := range files {
+		dstPath := filepath.Join(dstDir, rel)
+		entry, ok := seen[dstPath]
+		if !ok {
+			t.Fatalf("missing entry for %s", dstPath)
+		}
+		if entry.Size != int64(len(contents)) {
+			t.Fatalf("unexpected entry size for %s: got %d want %d", dstPath, entry.Size, len(contents))
 		}
 	}
 }
@@ -91,7 +150,7 @@ func TestScanDeterministicOrderSync(t *testing.T) {
 	var previousOrder []string
 	for i := 0; i < 3; i++ {
 		tasksCh := make(chan task.Task, len(expected))
-		if err := Scan(srcDir, dstDir, false, ModeSync, tasksCh); err != nil {
+		if err := Scan(srcDir, dstDir, false, ModeSync, Options{}, tasksCh); err != nil {
 			t.Fatalf("scan failed: %v", err)
 		}
 		close(tasksCh)

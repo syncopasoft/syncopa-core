@@ -1,8 +1,11 @@
 package scanner
 
 import (
+	"archive/tar"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -30,6 +33,19 @@ var modeNames = map[string]Mode{
 	"sync":   ModeSync,
 }
 
+// Options control the behaviour of Scan.
+type Options struct {
+	// BatchThreshold groups files whose size is <= the threshold into a
+	// single batch task. A value <= 0 disables batching.
+	BatchThreshold int64
+	// BatchMaxFiles caps how many files can be grouped into a single batch.
+	// A value <= 0 means unlimited.
+	BatchMaxFiles int
+	// BatchMaxBytes caps the total bytes contained in a single batch. A
+	// value <= 0 means unlimited.
+	BatchMaxBytes int64
+}
+
 // ParseMode converts a string into a Mode value.
 func ParseMode(s string) (Mode, error) {
 	m, ok := modeNames[strings.ToLower(s)]
@@ -41,7 +57,7 @@ func ParseMode(s string) (Mode, error) {
 
 // Scan walks the source and destination directories and emits tasks based on
 // the selected mode.
-func Scan(src, dst string, includeDir bool, mode Mode, tasks chan<- task.Task) error {
+func Scan(src, dst string, includeDir bool, mode Mode, opts Options, tasks chan<- task.Task) error {
 	if src == "" || dst == "" {
 		return errors.New("src and dst required")
 	}
@@ -97,24 +113,36 @@ func Scan(src, dst string, includeDir bool, mode Mode, tasks chan<- task.Task) e
 		dstDirs[key] = meta
 	}
 
+	batcher := newCopyBatcher(opts)
+
 	for _, key := range srcFileKeys {
 		srcMeta := srcFiles[key]
 		dstPath := filepath.Join(cleanDst, key)
 		dstMeta, exists := dstFiles[key]
 		if !exists {
-			tasks <- task.Task{Action: task.ActionCopy, Src: srcMeta.Path, Dst: dstPath}
+			if err := batcher.Add(srcMeta.Path, dstPath, srcMeta.Info, tasks); err != nil {
+				return err
+			}
 			continue
 		}
 		if shouldCopy(srcMeta.Info, dstMeta.Info) {
-			tasks <- task.Task{Action: task.ActionCopy, Src: srcMeta.Path, Dst: dstPath}
+			if err := batcher.Add(srcMeta.Path, dstPath, srcMeta.Info, tasks); err != nil {
+				return err
+			}
 		}
+	}
+
+	if err := batcher.Flush(tasks); err != nil {
+		return err
 	}
 
 	switch mode {
 	case ModeMirror:
 		enqueueMirrorDeletes(cleanDst, dstFiles, dstDirs, srcFiles, srcDirs, tasks)
 	case ModeSync:
-		enqueueSyncTasks(cleanSrc, cleanDst, base, includeDir, srcFiles, dstFiles, srcFileKeys, dstFileKeys, tasks)
+		if err := enqueueSyncTasks(cleanSrc, cleanDst, base, includeDir, srcFiles, dstFiles, srcFileKeys, dstFileKeys, batcher, tasks); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -143,7 +171,7 @@ func enqueueMirrorDeletes(cleanDst string, dstFiles, dstDirs, srcFiles, srcDirs 
 	}
 }
 
-func enqueueSyncTasks(cleanSrc, cleanDst, base string, includeDir bool, srcFiles, dstFiles map[string]fileMeta, srcKeys, dstKeys []string, tasks chan<- task.Task) {
+func enqueueSyncTasks(cleanSrc, cleanDst, base string, includeDir bool, srcFiles, dstFiles map[string]fileMeta, srcKeys, dstKeys []string, batcher *copyBatcher, tasks chan<- task.Task) error {
 	for _, key := range dstKeys {
 		dstMeta := dstFiles[key]
 		if _, ok := srcFiles[key]; ok {
@@ -153,7 +181,9 @@ func enqueueSyncTasks(cleanSrc, cleanDst, base string, includeDir bool, srcFiles
 		if !ok {
 			continue
 		}
-		tasks <- task.Task{Action: task.ActionCopy, Src: dstMeta.Path, Dst: srcPath}
+		if err := batcher.Add(dstMeta.Path, srcPath, dstMeta.Info, tasks); err != nil {
+			return err
+		}
 	}
 
 	for _, key := range srcKeys {
@@ -167,9 +197,145 @@ func enqueueSyncTasks(cleanSrc, cleanDst, base string, includeDir bool, srcFiles
 			if !ok {
 				continue
 			}
-			tasks <- task.Task{Action: task.ActionCopy, Src: dstMeta.Path, Dst: srcPath}
+			if err := batcher.Add(dstMeta.Path, srcPath, dstMeta.Info, tasks); err != nil {
+				return err
+			}
 		}
 	}
+
+	return batcher.Flush(tasks)
+}
+
+type copyBatcher struct {
+	opts       Options
+	buf        bytes.Buffer
+	tw         *tar.Writer
+	entries    []task.CopyBatchEntry
+	totalBytes int64
+}
+
+func newCopyBatcher(opts Options) *copyBatcher {
+	return &copyBatcher{opts: opts}
+}
+
+func (b *copyBatcher) enabled() bool {
+	return b != nil && b.opts.BatchThreshold > 0
+}
+
+func (b *copyBatcher) canAdd(size int64) bool {
+	if !b.enabled() {
+		return false
+	}
+	if b.opts.BatchMaxFiles > 0 && len(b.entries) >= b.opts.BatchMaxFiles {
+		return false
+	}
+	if b.opts.BatchMaxBytes > 0 && b.totalBytes+size > b.opts.BatchMaxBytes {
+		return false
+	}
+	return true
+}
+
+func (b *copyBatcher) reachedLimits() bool {
+	if !b.enabled() {
+		return false
+	}
+	if b.opts.BatchMaxFiles > 0 && len(b.entries) >= b.opts.BatchMaxFiles {
+		return true
+	}
+	if b.opts.BatchMaxBytes > 0 && b.totalBytes >= b.opts.BatchMaxBytes {
+		return true
+	}
+	return false
+}
+
+func (b *copyBatcher) Add(src, dst string, info fs.FileInfo, tasks chan<- task.Task) error {
+	if !b.enabled() {
+		tasks <- task.Task{Action: task.ActionCopy, Src: src, Dst: dst}
+		return nil
+	}
+	if info == nil || info.Size() > b.opts.BatchThreshold {
+		if err := b.Flush(tasks); err != nil {
+			return err
+		}
+		tasks <- task.Task{Action: task.ActionCopy, Src: src, Dst: dst}
+		return nil
+	}
+	if !b.canAdd(info.Size()) {
+		if err := b.Flush(tasks); err != nil {
+			return err
+		}
+	}
+	if b.tw == nil {
+		b.tw = tar.NewWriter(&b.buf)
+	}
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	header, err := tar.FileInfoHeader(info, "")
+	if err != nil {
+		b.reset()
+		return err
+	}
+	header.Name = fmt.Sprintf("file-%d", len(b.entries))
+	if err := b.tw.WriteHeader(header); err != nil {
+		b.reset()
+		return err
+	}
+	if _, err := io.Copy(b.tw, f); err != nil {
+		b.reset()
+		return err
+	}
+
+	b.entries = append(b.entries, task.CopyBatchEntry{Source: src, Destination: dst, Size: info.Size()})
+	b.totalBytes += info.Size()
+
+	if b.reachedLimits() {
+		return b.Flush(tasks)
+	}
+	return nil
+}
+
+func (b *copyBatcher) Flush(tasks chan<- task.Task) error {
+	if !b.enabled() {
+		return nil
+	}
+	if len(b.entries) == 0 {
+		b.reset()
+		return nil
+	}
+	if b.tw != nil {
+		if err := b.tw.Close(); err != nil {
+			return err
+		}
+	}
+	archive := make([]byte, b.buf.Len())
+	copy(archive, b.buf.Bytes())
+	entries := make([]task.CopyBatchEntry, len(b.entries))
+	copy(entries, b.entries)
+
+	src := ""
+	dst := ""
+	if len(entries) > 0 {
+		src = entries[0].Source
+		dst = entries[0].Destination
+	}
+
+	tasks <- task.Task{Action: task.ActionCopyBatch, Src: src, Dst: dst, Batch: &task.CopyBatchPayload{Entries: entries, Archive: archive}}
+	b.reset()
+	return nil
+}
+
+func (b *copyBatcher) reset() {
+	if b == nil {
+		return
+	}
+	b.entries = nil
+	b.totalBytes = 0
+	b.buf.Reset()
+	b.tw = nil
 }
 
 func shouldCopy(srcInfo, dstInfo fs.FileInfo) bool {

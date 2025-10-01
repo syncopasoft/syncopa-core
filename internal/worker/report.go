@@ -12,13 +12,14 @@ import (
 
 // TaskReport captures the outcome of processing a single task.
 type TaskReport struct {
-	Action      task.Action
-	Source      string
-	Destination string
-	Bytes       int64
-	Hash        string
-	StartedAt   time.Time
-	Duration    time.Duration
+	Action       task.Action
+	Source       string
+	Destination  string
+	Bytes        int64
+	Hash         string
+	StartedAt    time.Time
+	Duration     time.Duration
+	BatchEntries []task.CopyBatchEntry
 }
 
 // CompletedAt returns when the task finished.
@@ -48,11 +49,11 @@ func (r *Report) add(res *TaskReport) {
 		return
 	}
 	switch res.Action {
-	case task.ActionCopy:
+	case task.ActionCopy, task.ActionCopyBatch:
 		r.totalBytes += res.Bytes
-		r.copies = append(r.copies, *res)
+		r.copies = append(r.copies, cloneTaskReport(*res))
 	case task.ActionDelete:
-		r.deletes = append(r.deletes, *res)
+		r.deletes = append(r.deletes, cloneTaskReport(*res))
 	}
 }
 
@@ -96,7 +97,7 @@ func (r *Report) ShortSummary() string {
 	fmt.Fprintf(&b, "Start: %s\n", r.StartedAt.Format(time.RFC3339))
 	fmt.Fprintf(&b, "End: %s\n", r.CompletedAt.Format(time.RFC3339))
 	fmt.Fprintf(&b, "Duration: %s\n", r.Duration())
-	fmt.Fprintf(&b, "Files copied: %d\n", len(r.copies))
+	fmt.Fprintf(&b, "Files copied: %d\n", r.copiedFileCount())
 	fmt.Fprintf(&b, "Files deleted: %d\n", len(r.deletes))
 	fmt.Fprintf(&b, "Bytes copied: %s\n", formatBytes(r.totalBytes))
 	fmt.Fprintf(&b, "Average speed: %s/s\n", formatBytesPerSecond(r.AverageSpeedBytes()))
@@ -110,6 +111,11 @@ func (r *Report) ShortSummary() string {
 				formatBytes(copy.Bytes),
 				copy.Duration,
 				formatBytesPerSecond(speedFromCopy(copy)))
+			if len(copy.BatchEntries) > 0 {
+				for _, entry := range copy.BatchEntries {
+					fmt.Fprintf(&b, "    • %s (%s)\n", entry.Destination, formatBytes(entry.Size))
+				}
+			}
 		}
 	}
 	return b.String()
@@ -120,7 +126,7 @@ func (r *Report) VerboseReport() string {
 	var b strings.Builder
 	fmt.Fprintln(&b, "Verbose Report")
 	fmt.Fprintln(&b, strings.Repeat("=", len("Verbose Report")))
-	fmt.Fprintf(&b, "Total files copied: %d\n", len(r.copies))
+	fmt.Fprintf(&b, "Total files copied: %d\n", r.copiedFileCount())
 	fmt.Fprintf(&b, "Total files deleted: %d\n", len(r.deletes))
 	fmt.Fprintf(&b, "Total bytes copied: %s\n", formatBytes(r.totalBytes))
 	fmt.Fprintf(&b, "Overall duration: %s\n", r.Duration())
@@ -142,6 +148,12 @@ func (r *Report) VerboseReport() string {
 			}
 			if completed := copy.CompletedAt(); !completed.IsZero() {
 				fmt.Fprintf(&b, "  Completed: %s\n", completed.Format(time.RFC3339))
+			}
+			if len(copy.BatchEntries) > 0 {
+				fmt.Fprintln(&b, "  Files in batch:")
+				for _, entry := range copy.BatchEntries {
+					fmt.Fprintf(&b, "    - %s (source=%s, size=%s)\n", entry.Destination, entry.Source, formatBytes(entry.Size))
+				}
 			}
 		}
 	}
@@ -180,15 +192,47 @@ func (r *Report) TotalBytes() int64 {
 // Copies returns a snapshot of the recorded copy reports.
 func (r *Report) Copies() []TaskReport {
 	res := make([]TaskReport, len(r.copies))
-	copy(res, r.copies)
+	for i, tr := range r.copies {
+		res[i] = cloneTaskReport(tr)
+	}
 	return res
 }
 
 // Deletes returns a snapshot of the recorded delete reports.
 func (r *Report) Deletes() []TaskReport {
 	res := make([]TaskReport, len(r.deletes))
-	copy(res, r.deletes)
+	for i, tr := range r.deletes {
+		res[i] = cloneTaskReport(tr)
+	}
 	return res
+}
+
+func (r *Report) copiedFileCount() int {
+	total := 0
+	for _, c := range r.copies {
+		total += copyCount(c)
+	}
+	return total
+}
+
+func copyCount(tr TaskReport) int {
+	if tr.Action == task.ActionCopyBatch {
+		if len(tr.BatchEntries) == 0 {
+			return 0
+		}
+		return len(tr.BatchEntries)
+	}
+	return 1
+}
+
+func cloneTaskReport(src TaskReport) TaskReport {
+	dup := src
+	if len(src.BatchEntries) > 0 {
+		entries := make([]task.CopyBatchEntry, len(src.BatchEntries))
+		copy(entries, src.BatchEntries)
+		dup.BatchEntries = entries
+	}
+	return dup
 }
 
 func formatBytes(value int64) string {

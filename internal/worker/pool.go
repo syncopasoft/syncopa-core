@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"archive/tar"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -103,6 +105,36 @@ func (p *Pool) handleTask(t task.Task) (*TaskReport, error) {
 			StartedAt:   start,
 			Duration:    duration,
 		}, nil
+	case task.ActionCopyBatch:
+		if t.Batch == nil {
+			return nil, fmt.Errorf("copy batch task missing payload")
+		}
+		if p.Verbose {
+			log.Printf("copy batch (%d files)", len(t.Batch.Entries))
+		}
+		start := time.Now()
+		bytesCopied, hash, err := p.copyBatch(t.Batch)
+		duration := time.Since(start)
+		if err != nil {
+			return nil, err
+		}
+		entries := append([]task.CopyBatchEntry(nil), t.Batch.Entries...)
+		destination := fmt.Sprintf("batch of %d files", len(entries))
+		source := ""
+		if len(entries) > 0 {
+			source = entries[0].Source
+			destination = fmt.Sprintf("%s (batch of %d files)", entries[0].Destination, len(entries))
+		}
+		return &TaskReport{
+			Action:       t.Action,
+			Source:       source,
+			Destination:  destination,
+			Bytes:        bytesCopied,
+			Hash:         hash,
+			StartedAt:    start,
+			Duration:     duration,
+			BatchEntries: entries,
+		}, nil
 	case task.ActionDelete:
 		if p.Verbose {
 			log.Printf("delete %s", t.Dst)
@@ -199,4 +231,47 @@ func copyWithBandwidth(dst io.Writer, src io.Reader, limit int64) (int64, string
 func deletePath(path string) error {
 	// os.RemoveAll succeeds even if the path does not exist.
 	return os.RemoveAll(path)
+}
+
+func (p *Pool) copyBatch(payload *task.CopyBatchPayload) (int64, string, error) {
+	if payload == nil {
+		return 0, "", fmt.Errorf("batch payload is nil")
+	}
+	reader := bytes.NewReader(payload.Archive)
+	tr := tar.NewReader(reader)
+	hashBytes := sha256.Sum256(payload.Archive)
+
+	var totalBytes int64
+	for i, entry := range payload.Entries {
+		header, err := tr.Next()
+		if err != nil {
+			return totalBytes, "", fmt.Errorf("reading batch entry %d: %w", i, err)
+		}
+		if header == nil {
+			return totalBytes, "", fmt.Errorf("missing tar header for entry %d", i)
+		}
+		if entry.Size >= 0 && header.Size != entry.Size {
+			// Prefer the metadata from the payload which was derived from the source file.
+			header.Size = entry.Size
+		}
+		if err := os.MkdirAll(filepath.Dir(entry.Destination), 0o755); err != nil {
+			return totalBytes, "", err
+		}
+		out, err := os.Create(entry.Destination)
+		if err != nil {
+			return totalBytes, "", err
+		}
+		limited := io.LimitReader(tr, header.Size)
+		written, _, copyErr := copyWithBandwidth(out, limited, p.BandwidthLimit)
+		closeErr := out.Close()
+		totalBytes += written
+		if copyErr != nil {
+			return totalBytes, "", copyErr
+		}
+		if closeErr != nil {
+			return totalBytes, "", closeErr
+		}
+	}
+
+	return totalBytes, hex.EncodeToString(hashBytes[:]), nil
 }
