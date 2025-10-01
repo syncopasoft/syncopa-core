@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -44,6 +45,10 @@ type Options struct {
 	// BatchMaxBytes caps the total bytes contained in a single batch. A
 	// value <= 0 means unlimited.
 	BatchMaxBytes int64
+	// AutoTuneBatching enables automatic configuration of the batching
+	// parameters based on the observed source files. Manual values above
+	// take precedence when provided.
+	AutoTuneBatching bool
 }
 
 // ParseMode converts a string into a Mode value.
@@ -53,6 +58,121 @@ func ParseMode(s string) (Mode, error) {
 		return ModeUpdate, fmt.Errorf("unknown mode %q", s)
 	}
 	return m, nil
+}
+
+func tuneBatchingOptions(opts Options, files map[string]fileMeta) Options {
+	if !opts.AutoTuneBatching {
+		return opts
+	}
+	if opts.BatchThreshold > 0 || opts.BatchMaxFiles > 0 || opts.BatchMaxBytes > 0 {
+		// Manual overrides always win.
+		return opts
+	}
+
+	sizes := make([]int64, 0, len(files))
+	for _, meta := range files {
+		if meta.Info == nil {
+			continue
+		}
+		size := meta.Info.Size()
+		if size < 0 {
+			continue
+		}
+		sizes = append(sizes, size)
+	}
+	if len(sizes) == 0 {
+		return opts
+	}
+
+	sort.Slice(sizes, func(i, j int) bool { return sizes[i] < sizes[j] })
+
+	const smallFileCutoff = int64(512 * 1024)
+	small := make([]int64, 0, len(sizes))
+	for _, size := range sizes {
+		if size <= smallFileCutoff {
+			small = append(small, size)
+		}
+	}
+	if len(small) < 4 {
+		// Too few small files to benefit from batching.
+		return opts
+	}
+
+	totalSmall := int64(0)
+	for _, size := range small {
+		totalSmall += size
+	}
+	avgSmall := totalSmall / int64(len(small))
+	if avgSmall <= 0 {
+		avgSmall = 1
+	}
+
+	median := percentileInt64(small, 0.5)
+	if median <= 0 {
+		median = avgSmall
+	}
+	p90 := percentileInt64(small, 0.9)
+	if p90 <= 0 {
+		p90 = median
+	}
+
+	threshold := p90
+	minThreshold := int64(4 * 1024)
+	if threshold < 2*median {
+		threshold = 2 * median
+	}
+	if threshold < minThreshold {
+		threshold = minThreshold
+	}
+	if threshold > smallFileCutoff {
+		threshold = smallFileCutoff
+	}
+
+	// Aim for batches around a few megabytes so the worker only needs to
+	// unpack a handful of archives per second.
+	targetBatchBytes := avgSmall * 64
+	if targetBatchBytes < 1<<20 {
+		targetBatchBytes = 1 << 20
+	}
+	if targetBatchBytes > 8<<20 {
+		targetBatchBytes = 8 << 20
+	}
+	if targetBatchBytes < threshold*4 {
+		targetBatchBytes = threshold * 4
+	}
+
+	maxFiles := int(targetBatchBytes / avgSmall)
+	if maxFiles < 8 {
+		maxFiles = 8
+	}
+	if maxFiles > 512 {
+		maxFiles = 512
+	}
+
+	opts.BatchThreshold = threshold
+	opts.BatchMaxFiles = maxFiles
+	opts.BatchMaxBytes = targetBatchBytes
+	return opts
+}
+
+func percentileInt64(data []int64, pct float64) int64 {
+	if len(data) == 0 {
+		return 0
+	}
+	if pct <= 0 {
+		return data[0]
+	}
+	if pct >= 1 {
+		return data[len(data)-1]
+	}
+	idx := int(math.Ceil(pct*float64(len(data)))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(data) {
+		idx = len(data) - 1
+	}
+	return data[idx]
 }
 
 // Scan walks the source and destination directories and emits tasks based on
@@ -113,7 +233,8 @@ func Scan(src, dst string, includeDir bool, mode Mode, opts Options, tasks chan<
 		dstDirs[key] = meta
 	}
 
-	batcher := newCopyBatcher(opts)
+	tunedOpts := tuneBatchingOptions(opts, srcFiles)
+	batcher := newCopyBatcher(tunedOpts)
 
 	for _, key := range srcFileKeys {
 		srcMeta := srcFiles[key]
@@ -212,10 +333,34 @@ type copyBatcher struct {
 	tw         *tar.Writer
 	entries    []task.CopyBatchEntry
 	totalBytes int64
+	copyBuf    []byte
 }
 
 func newCopyBatcher(opts Options) *copyBatcher {
-	return &copyBatcher{opts: opts}
+	b := &copyBatcher{opts: opts}
+	if opts.BatchMaxBytes > 0 {
+		// Reserve enough capacity for the expected payload plus some headroom
+		// for tar headers while keeping memory usage bounded.
+		reserve := opts.BatchMaxBytes + int64(opts.BatchMaxFiles+1)*512
+		const maxReserve = int64(16 << 20) // 16 MiB cap to avoid large allocations
+		if reserve > maxReserve {
+			reserve = maxReserve
+		}
+		if reserve > 0 {
+			b.buf.Grow(int(reserve))
+		}
+	}
+	if opts.BatchThreshold > 0 {
+		bufSize := opts.BatchThreshold / 2
+		if bufSize < 32*1024 {
+			bufSize = 32 * 1024
+		}
+		if bufSize > 256*1024 {
+			bufSize = 256 * 1024
+		}
+		b.copyBuf = make([]byte, bufSize)
+	}
+	return b
 }
 
 func (b *copyBatcher) enabled() bool {
@@ -284,9 +429,16 @@ func (b *copyBatcher) Add(src, dst string, info fs.FileInfo, tasks chan<- task.T
 		b.reset()
 		return err
 	}
-	if _, err := io.Copy(b.tw, f); err != nil {
-		b.reset()
-		return err
+	if b.copyBuf != nil {
+		if _, err := io.CopyBuffer(b.tw, f, b.copyBuf); err != nil {
+			b.reset()
+			return err
+		}
+	} else {
+		if _, err := io.Copy(b.tw, f); err != nil {
+			b.reset()
+			return err
+		}
 	}
 
 	b.entries = append(b.entries, task.CopyBatchEntry{Source: src, Destination: dst, Size: info.Size()})
