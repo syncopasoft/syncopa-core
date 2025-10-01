@@ -1,6 +1,8 @@
 package scanner
 
 import (
+	"fmt"
+	"io/fs"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -168,6 +170,65 @@ func TestScanDeterministicOrderSync(t *testing.T) {
 		}
 	}
 }
+
+func TestTuneBatchingOptionsAutoBatch(t *testing.T) {
+	files := make(map[string]fileMeta)
+	now := time.Now()
+	for i := 0; i < 64; i++ {
+		size := int64(2*1024 + (i%4)*512)
+		name := fmt.Sprintf("file-%d", i)
+		files[name] = fileMeta{Path: name, Info: stubFileInfo{name: name, size: size, modTime: now}}
+	}
+
+	opts := tuneBatchingOptions(Options{AutoTuneBatching: true}, files)
+	if opts.BatchThreshold <= 0 {
+		t.Fatalf("expected positive threshold, got %d", opts.BatchThreshold)
+	}
+	if opts.BatchMaxFiles <= 0 {
+		t.Fatalf("expected positive max files, got %d", opts.BatchMaxFiles)
+	}
+	if opts.BatchMaxBytes <= 0 {
+		t.Fatalf("expected positive max bytes, got %d", opts.BatchMaxBytes)
+	}
+	if opts.BatchThreshold < 1024 || opts.BatchThreshold > 512*1024 {
+		t.Fatalf("unexpected threshold %d", opts.BatchThreshold)
+	}
+}
+
+func TestTuneBatchingOptionsLargeFilesDisabled(t *testing.T) {
+	files := make(map[string]fileMeta)
+	now := time.Now()
+	for i := 0; i < 8; i++ {
+		size := int64(2*1024*1024 + int64(i)*1024)
+		name := fmt.Sprintf("large-%d", i)
+		files[name] = fileMeta{Path: name, Info: stubFileInfo{name: name, size: size, modTime: now}}
+	}
+
+	opts := tuneBatchingOptions(Options{AutoTuneBatching: true}, files)
+	if opts.BatchThreshold != 0 {
+		t.Fatalf("expected threshold to remain zero, got %d", opts.BatchThreshold)
+	}
+	if opts.BatchMaxFiles != 0 {
+		t.Fatalf("expected max files to remain zero, got %d", opts.BatchMaxFiles)
+	}
+	if opts.BatchMaxBytes != 0 {
+		t.Fatalf("expected max bytes to remain zero, got %d", opts.BatchMaxBytes)
+	}
+}
+
+type stubFileInfo struct {
+	name    string
+	size    int64
+	mode    fs.FileMode
+	modTime time.Time
+}
+
+func (s stubFileInfo) Name() string       { return s.name }
+func (s stubFileInfo) Size() int64        { return s.size }
+func (s stubFileInfo) Mode() fs.FileMode  { return s.mode }
+func (s stubFileInfo) ModTime() time.Time { return s.modTime }
+func (s stubFileInfo) IsDir() bool        { return false }
+func (s stubFileInfo) Sys() any           { return nil }
 
 func directionKey(direction, rel string) string {
 	return direction + ":" + filepath.ToSlash(rel)
