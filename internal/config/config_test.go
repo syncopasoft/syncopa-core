@@ -66,3 +66,18 @@ func TestResolveNFSMountsUnknownServer(t *testing.T) {
 		t.Fatalf("expected error for missing server")
 	}
 }
+
+func TestControlTokens(t *testing.T) {
+	cfg := &Config{Control: ControlConfig{Tokens: []string{" alpha ", "beta", "alpha"}}}
+	tokens := cfg.ControlTokens()
+	if len(tokens) != 2 {
+		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+	}
+	if tokens[0] != "alpha" || tokens[1] != "beta" {
+		t.Fatalf("unexpected tokens: %v", tokens)
+	}
+	cfg.Control.Tokens = append(cfg.Control.Tokens, "  ")
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected validation error for empty control token")
+	}
+}

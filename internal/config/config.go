@@ -15,9 +15,16 @@ import (
 type Config struct {
 	Host       string                 `json:"host,omitempty"`
 	Port       int                    `json:"port,omitempty"`
+	Control    ControlConfig          `json:"control,omitempty"`
 	NFSServers map[string]NFSServer   `json:"nfs_servers"`
 	Agents     map[string]AgentConfig `json:"agents"`
 	Pools      map[string]PoolConfig  `json:"pools,omitempty"`
+}
+
+// ControlConfig declares authentication tokens for control-plane operations
+// such as submitting jobs to the daemon.
+type ControlConfig struct {
+	Tokens []string `json:"tokens"`
 }
 
 // NFSServer describes an available NFS export.
@@ -86,6 +93,29 @@ func (c *Config) DefaultPort(fallback int) int {
 		return c.Port
 	}
 	return fallback
+}
+
+// ControlTokens returns the list of tokens that authorize control-plane
+// operations such as submitting jobs to the daemon.
+func (c *Config) ControlTokens() []string {
+	if c == nil {
+		return nil
+	}
+	tokens := []string{}
+	seen := map[string]struct{}{}
+	for _, token := range c.Control.Tokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		tokens = append(tokens, token)
+	}
+	sort.Strings(tokens)
+	return tokens
 }
 
 // AgentAllowedTokens returns the list of tokens the given agent may use.
@@ -211,6 +241,11 @@ func (p PoolConfig) hasAgent(agentID string) bool {
 func (c *Config) Validate() error {
 	if c == nil {
 		return errors.New("config is nil")
+	}
+	for _, token := range c.Control.Tokens {
+		if strings.TrimSpace(token) == "" {
+			return errors.New("control tokens must not be empty")
+		}
 	}
 	for name, server := range c.NFSServers {
 		if strings.TrimSpace(server.Host) == "" {
