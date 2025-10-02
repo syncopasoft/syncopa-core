@@ -1,4 +1,4 @@
 module github.com/syncopasoft/syncopa-core
-go 1.23.8
-go mod tidy
+
+go 1.21
 

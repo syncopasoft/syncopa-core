@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"syncopa/internal/task"
+	"github.com/syncopasoft/syncopa-core/internal/task"
 )
 
 func TestReportWriteCSV(t *testing.T) {

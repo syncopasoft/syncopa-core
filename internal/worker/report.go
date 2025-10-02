@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"syncopa/internal/task"
+	"github.com/syncopasoft/syncopa-core/internal/task"
 )
 
 // TaskReport captures the outcome of processing a single task.

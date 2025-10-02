@@ -5,7 +5,7 @@ package worker
 import (
 	"testing"
 
-	"syncopa/internal/task"
+	"github.com/syncopasoft/syncopa-core/internal/task"
 )
 
 func TestReportSnapshotRoundTrip(t *testing.T) {

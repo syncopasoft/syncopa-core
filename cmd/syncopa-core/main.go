@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"syncopa/internal/cli"
+	"github.com/syncopasoft/syncopa-core/internal/cli"
 )
 
 func main() {

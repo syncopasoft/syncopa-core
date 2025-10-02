@@ -3,7 +3,7 @@ package worker
 import (
 	"sync"
 
-	"syncopa/internal/task"
+	"github.com/syncopasoft/syncopa-core/internal/task"
 )
 
 // Pool copies files using a set of workers.
