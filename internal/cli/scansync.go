@@ -212,23 +212,15 @@ func RunSync(args []string, cfg SyncConfig) error {
 		return err
 	}
 
-	if cfg.PrintSummary {
-		fmt.Println(report.ShortSummary())
+	var pdfPath, csvPath string
+	if reportPDF != nil {
+		pdfPath = *reportPDF
 	}
-	if cfg.PrintVerboseReport {
-		if cfg.PrintSummary {
-			fmt.Println()
-		}
-		fmt.Println(report.VerboseReport())
+	if reportCSV != nil {
+		csvPath = *reportCSV
 	}
-
-	if cfg.EnableReportFlags {
-		if err := writeReportFile(*reportPDF, report.WritePDF); err != nil {
-			return fmt.Errorf("failed to write PDF report: %w", err)
-		}
-		if err := writeReportFile(*reportCSV, report.WriteCSV); err != nil {
-			return fmt.Errorf("failed to write CSV report: %w", err)
-		}
+	if err := handleSyncReportOutput(report, cfg, pdfPath, csvPath); err != nil {
+		return err
 	}
 
 	if err := <-scanErr; err != nil {

@@ -98,56 +98,6 @@ func (r *Report) Record(res *TaskReport) {
 	r.add(res)
 }
 
-// Snapshot returns a deep copy of the report that can be serialized for
-// persistence. The copy is detached from the original so subsequent mutations
-// do not leak into the stored representation.
-func (r *Report) Snapshot() ReportSnapshot {
-	if r == nil {
-		return ReportSnapshot{}
-	}
-	snap := ReportSnapshot{
-		StartedAt:   r.StartedAt,
-		CompletedAt: r.CompletedAt,
-		TotalBytes:  r.totalBytes,
-	}
-	if len(r.copies) > 0 {
-		snap.Copies = make([]TaskReport, len(r.copies))
-		for i, tr := range r.copies {
-			snap.Copies[i] = cloneTaskReport(tr)
-		}
-	}
-	if len(r.deletes) > 0 {
-		snap.Deletes = make([]TaskReport, len(r.deletes))
-		for i, tr := range r.deletes {
-			snap.Deletes[i] = cloneTaskReport(tr)
-		}
-	}
-	return snap
-}
-
-// ReportFromSnapshot rebuilds a Report from a previously captured snapshot.
-// The returned Report is independent from the snapshot and can be mutated
-// safely by callers.
-func ReportFromSnapshot(snap ReportSnapshot) *Report {
-	report := newReport()
-	report.StartedAt = snap.StartedAt
-	report.CompletedAt = snap.CompletedAt
-	report.totalBytes = snap.TotalBytes
-	if len(snap.Copies) > 0 {
-		report.copies = make([]TaskReport, len(snap.Copies))
-		for i, tr := range snap.Copies {
-			report.copies[i] = cloneTaskReport(tr)
-		}
-	}
-	if len(snap.Deletes) > 0 {
-		report.deletes = make([]TaskReport, len(snap.Deletes))
-		for i, tr := range snap.Deletes {
-			report.deletes[i] = cloneTaskReport(tr)
-		}
-	}
-	return report
-}
-
 // Duration returns the total time spent for the run.
 func (r *Report) Duration() time.Duration {
 	if r.CompletedAt.IsZero() {
@@ -195,52 +145,6 @@ func (r *Report) ShortSummary() string {
 					fmt.Fprintf(&b, "    • %s (%s)\n", entry.Destination, formatBytes(entry.Size))
 				}
 			}
-		}
-	}
-	return b.String()
-}
-
-// VerboseReport returns a detailed textual report for the run.
-func (r *Report) VerboseReport() string {
-	var b strings.Builder
-	fmt.Fprintln(&b, "Verbose Report")
-	fmt.Fprintln(&b, strings.Repeat("=", len("Verbose Report")))
-	fmt.Fprintf(&b, "Total files copied: %d\n", r.copiedFileCount())
-	fmt.Fprintf(&b, "Total files deleted: %d\n", len(r.deletes))
-	fmt.Fprintf(&b, "Total bytes copied: %s\n", formatBytes(r.totalBytes))
-	fmt.Fprintf(&b, "Overall duration: %s\n", r.Duration())
-	fmt.Fprintf(&b, "Overall average speed: %s/s\n", formatBytesPerSecond(r.AverageSpeedBytes()))
-
-	if len(r.copies) > 0 {
-		fmt.Fprintln(&b, "\nDetailed copies:")
-		for _, copy := range r.copies {
-			fmt.Fprintf(&b, "\nDestination: %s\n", copy.Destination)
-			if copy.Source != "" {
-				fmt.Fprintf(&b, "  Source: %s\n", copy.Source)
-			}
-			fmt.Fprintf(&b, "  Hash: %s\n", copy.Hash)
-			fmt.Fprintf(&b, "  Size: %s\n", formatBytes(copy.Bytes))
-			fmt.Fprintf(&b, "  Duration: %s\n", copy.Duration)
-			fmt.Fprintf(&b, "  Speed: %s/s\n", formatBytesPerSecond(speedFromCopy(copy)))
-			if !copy.StartedAt.IsZero() {
-				fmt.Fprintf(&b, "  Started: %s\n", copy.StartedAt.Format(time.RFC3339))
-			}
-			if completed := copy.CompletedAt(); !completed.IsZero() {
-				fmt.Fprintf(&b, "  Completed: %s\n", completed.Format(time.RFC3339))
-			}
-			if len(copy.BatchEntries) > 0 {
-				fmt.Fprintln(&b, "  Files in batch:")
-				for _, entry := range copy.BatchEntries {
-					fmt.Fprintf(&b, "    - %s (source=%s, size=%s)\n", entry.Destination, entry.Source, formatBytes(entry.Size))
-				}
-			}
-		}
-	}
-
-	if len(r.deletes) > 0 {
-		fmt.Fprintln(&b, "\nDeletes:")
-		for _, del := range r.deletes {
-			fmt.Fprintf(&b, "- %s (duration=%s)\n", del.Destination, del.Duration)
 		}
 	}
 	return b.String()
