@@ -40,6 +40,16 @@ type Report struct {
 	deletes    []TaskReport
 }
 
+// ReportSnapshot captures a serializable representation of a Report so it can
+// be persisted and reconstructed later.
+type ReportSnapshot struct {
+	StartedAt   time.Time    `json:"started_at"`
+	CompletedAt time.Time    `json:"completed_at"`
+	TotalBytes  int64        `json:"total_bytes"`
+	Copies      []TaskReport `json:"copies"`
+	Deletes     []TaskReport `json:"deletes"`
+}
+
 func newReport() *Report {
 	return &Report{StartedAt: time.Now()}
 }
@@ -86,6 +96,56 @@ func (r *Report) Finalize() {
 // receive task outcomes from remote agents.
 func (r *Report) Record(res *TaskReport) {
 	r.add(res)
+}
+
+// Snapshot returns a deep copy of the report that can be serialized for
+// persistence. The copy is detached from the original so subsequent mutations
+// do not leak into the stored representation.
+func (r *Report) Snapshot() ReportSnapshot {
+	if r == nil {
+		return ReportSnapshot{}
+	}
+	snap := ReportSnapshot{
+		StartedAt:   r.StartedAt,
+		CompletedAt: r.CompletedAt,
+		TotalBytes:  r.totalBytes,
+	}
+	if len(r.copies) > 0 {
+		snap.Copies = make([]TaskReport, len(r.copies))
+		for i, tr := range r.copies {
+			snap.Copies[i] = cloneTaskReport(tr)
+		}
+	}
+	if len(r.deletes) > 0 {
+		snap.Deletes = make([]TaskReport, len(r.deletes))
+		for i, tr := range r.deletes {
+			snap.Deletes[i] = cloneTaskReport(tr)
+		}
+	}
+	return snap
+}
+
+// ReportFromSnapshot rebuilds a Report from a previously captured snapshot.
+// The returned Report is independent from the snapshot and can be mutated
+// safely by callers.
+func ReportFromSnapshot(snap ReportSnapshot) *Report {
+	report := newReport()
+	report.StartedAt = snap.StartedAt
+	report.CompletedAt = snap.CompletedAt
+	report.totalBytes = snap.TotalBytes
+	if len(snap.Copies) > 0 {
+		report.copies = make([]TaskReport, len(snap.Copies))
+		for i, tr := range snap.Copies {
+			report.copies[i] = cloneTaskReport(tr)
+		}
+	}
+	if len(snap.Deletes) > 0 {
+		report.deletes = make([]TaskReport, len(snap.Deletes))
+		for i, tr := range snap.Deletes {
+			report.deletes[i] = cloneTaskReport(tr)
+		}
+	}
+	return report
 }
 
 // Duration returns the total time spent for the run.
