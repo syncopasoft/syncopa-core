@@ -45,9 +45,11 @@ This places the binary in your Go bin directory (typically `$(go env GOPATH)/bin
 or `$GOBIN`). Make sure that directory is on your `$PATH` so you can run the
 tool directly.
 
-If you prefer to build from source after cloning the repository, run:
+If you prefer to build from source after cloning the repository, make sure you
+are inside the repository directory and then run:
 
 ```bash
+cd syncopa-core
 go build ./cmd/syncopa-core
 ```
 
