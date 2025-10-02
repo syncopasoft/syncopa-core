@@ -1,12 +1,15 @@
 package config
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -64,12 +67,16 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return nil, err
+
+	var cfg *Config
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".conf", ".ini":
+		cfg, err = parsePlainConfig(f)
+	default:
+		cfg, err = parseJSONConfig(f)
 	}
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	if cfg.NFSServers == nil {
@@ -81,7 +88,191 @@ func Load(path string) (*Config, error) {
 	if cfg.Pools == nil {
 		cfg.Pools = map[string]PoolConfig{}
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func parseJSONConfig(r io.Reader) (*Config, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+type plainSection struct {
+	kind string
+	name string
+}
+
+func parsePlainConfig(r io.Reader) (*Config, error) {
+	scanner := bufio.NewScanner(r)
+	cfg := &Config{}
+	section := plainSection{kind: "root"}
+
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		raw := scanner.Text()
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			if !strings.HasSuffix(line, "]") {
+				return nil, fmt.Errorf("config line %d: malformed section header", lineNo)
+			}
+			header := strings.TrimSpace(line[1 : len(line)-1])
+			if header == "" {
+				return nil, fmt.Errorf("config line %d: empty section header", lineNo)
+			}
+			parts := strings.SplitN(header, " ", 2)
+			sectionKind := strings.ToLower(strings.TrimSpace(parts[0]))
+			sectionName := ""
+			if len(parts) > 1 {
+				sectionName = strings.TrimSpace(parts[1])
+				if strings.HasPrefix(sectionName, "\"") || strings.HasPrefix(sectionName, "'") || strings.HasPrefix(sectionName, "`") {
+					unquoted, err := strconv.Unquote(sectionName)
+					if err != nil {
+						return nil, fmt.Errorf("config line %d: %v", lineNo, err)
+					}
+					sectionName = unquoted
+				}
+			}
+			switch sectionKind {
+			case "control":
+				if sectionName != "" {
+					return nil, fmt.Errorf("config line %d: control section must not have a name", lineNo)
+				}
+			case "nfs":
+				if sectionName == "" {
+					return nil, fmt.Errorf("config line %d: nfs section requires a name", lineNo)
+				}
+				if cfg.NFSServers == nil {
+					cfg.NFSServers = map[string]NFSServer{}
+				}
+				if _, exists := cfg.NFSServers[sectionName]; !exists {
+					cfg.NFSServers[sectionName] = NFSServer{}
+				}
+			case "agent":
+				if sectionName == "" {
+					return nil, fmt.Errorf("config line %d: agent section requires an id", lineNo)
+				}
+				if cfg.Agents == nil {
+					cfg.Agents = map[string]AgentConfig{}
+				}
+				if _, exists := cfg.Agents[sectionName]; !exists {
+					cfg.Agents[sectionName] = AgentConfig{}
+				}
+			case "pool":
+				if sectionName == "" {
+					return nil, fmt.Errorf("config line %d: pool section requires a name", lineNo)
+				}
+				if cfg.Pools == nil {
+					cfg.Pools = map[string]PoolConfig{}
+				}
+				if _, exists := cfg.Pools[sectionName]; !exists {
+					cfg.Pools[sectionName] = PoolConfig{}
+				}
+			default:
+				return nil, fmt.Errorf("config line %d: unknown section %q", lineNo, sectionKind)
+			}
+			section = plainSection{kind: sectionKind, name: sectionName}
+			continue
+		}
+
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("config line %d: expected key = value", lineNo)
+		}
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		value := strings.TrimSpace(parts[1])
+		if strings.HasPrefix(value, "\"") || strings.HasPrefix(value, "'") || strings.HasPrefix(value, "`") {
+			unquoted, err := strconv.Unquote(value)
+			if err != nil {
+				return nil, fmt.Errorf("config line %d: %v", lineNo, err)
+			}
+			value = unquoted
+		}
+
+		switch section.kind {
+		case "root":
+			switch key {
+			case "host":
+				cfg.Host = value
+			case "port":
+				if value == "" {
+					cfg.Port = 0
+					break
+				}
+				port, err := strconv.Atoi(value)
+				if err != nil {
+					return nil, fmt.Errorf("config line %d: invalid port %q", lineNo, value)
+				}
+				cfg.Port = port
+			default:
+				return nil, fmt.Errorf("config line %d: unknown top-level key %q", lineNo, key)
+			}
+		case "control":
+			if key != "token" {
+				return nil, fmt.Errorf("config line %d: unknown control key %q", lineNo, key)
+			}
+			cfg.Control.Tokens = append(cfg.Control.Tokens, value)
+		case "nfs":
+			server := cfg.NFSServers[section.name]
+			switch key {
+			case "host":
+				server.Host = value
+			case "export_path":
+				server.ExportPath = value
+			case "mount_point":
+				server.MountPoint = value
+			case "option":
+				server.Options = append(server.Options, value)
+			default:
+				return nil, fmt.Errorf("config line %d: unknown nfs key %q", lineNo, key)
+			}
+			cfg.NFSServers[section.name] = server
+		case "agent":
+			agent := cfg.Agents[section.name]
+			switch key {
+			case "token":
+				agent.Token = value
+			case "nfs":
+				agent.NFSServers = append(agent.NFSServers, value)
+			case "pool":
+				agent.Pools = append(agent.Pools, value)
+			default:
+				return nil, fmt.Errorf("config line %d: unknown agent key %q", lineNo, key)
+			}
+			cfg.Agents[section.name] = agent
+		case "pool":
+			pool := cfg.Pools[section.name]
+			switch key {
+			case "token":
+				pool.Token = value
+			case "agent":
+				pool.Agents = append(pool.Agents, value)
+			case "nfs":
+				pool.NFSServers = append(pool.NFSServers, value)
+			default:
+				return nil, fmt.Errorf("config line %d: unknown pool key %q", lineNo, key)
+			}
+			cfg.Pools[section.name] = pool
+		default:
+			return nil, fmt.Errorf("config line %d: no active section for key %q", lineNo, key)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // DefaultPort returns the configured port or the provided fallback when unset.
