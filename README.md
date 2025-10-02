@@ -31,17 +31,21 @@ to stand alone so you can embed them in your own workflows as well.
 * Go 1.21 or newer
 * A POSIX-like environment for running the CLI examples (Linux, macOS, WSL)
 
-### Install the module
+### Install the CLI
 
-Fetch the Go module with `go get`:
+`syncopa-core` ships a reference command line interface that can be installed
+directly with `go install`. The main package lives under the `cmd` directory, so
+be sure to include that path when installing:
 
 ```bash
-go get github.com/syncopasoft/syncopa-core@latest
+go install github.com/syncopasoft/syncopa-core/cmd/syncopa-core@latest
 ```
 
-### Build the CLI
+This places the binary in your Go bin directory (typically `$(go env GOPATH)/bin`
+or `$GOBIN`). Make sure that directory is on your `$PATH` so you can run the
+tool directly.
 
-Compile the reference CLI by running:
+If you prefer to build from source after cloning the repository, run:
 
 ```bash
 go build ./cmd/syncopa-core
