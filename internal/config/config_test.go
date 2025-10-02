@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"path/filepath"
+	"reflect"
+	"testing"
+)
 
 func TestAgentAllowedTokens(t *testing.T) {
 	cfg := &Config{
@@ -79,5 +83,21 @@ func TestControlTokens(t *testing.T) {
 	cfg.Control.Tokens = append(cfg.Control.Tokens, "  ")
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("expected validation error for empty control token")
+	}
+}
+
+func TestLoadConfigFormats(t *testing.T) {
+	jsonCfg, err := Load(filepath.Join("testdata", "example.json"))
+	if err != nil {
+		t.Fatalf("load json config: %v", err)
+	}
+
+	confCfg, err := Load(filepath.Join("testdata", "example.conf"))
+	if err != nil {
+		t.Fatalf("load plain config: %v", err)
+	}
+
+	if !reflect.DeepEqual(jsonCfg, confCfg) {
+		t.Fatalf("expected configs to match\njson: %#v\nconf: %#v", jsonCfg, confCfg)
 	}
 }

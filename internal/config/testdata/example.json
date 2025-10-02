@@ -1,0 +1,38 @@
+{
+  "host": "0.0.0.0",
+  "port": 8080,
+  "control": {
+    "tokens": ["alpha", "beta"]
+  },
+  "nfs_servers": {
+    "primary": {
+      "host": "nfs.example.com",
+      "export_path": "/data",
+      "mount_point": "/mnt/data",
+      "options": ["rw", "hard"]
+    },
+    "backup": {
+      "host": "backup.example.com",
+      "export_path": "/backup",
+      "mount_point": "/mnt/backup"
+    }
+  },
+  "agents": {
+    "worker-a": {
+      "token": "agent-a-token",
+      "nfs_servers": ["primary"],
+      "pools": ["blue"]
+    },
+    "worker-b": {
+      "token": "agent-b-token",
+      "nfs_servers": ["backup"]
+    }
+  },
+  "pools": {
+    "blue": {
+      "token": "pool-token",
+      "agents": ["worker-a"],
+      "nfs_servers": ["primary"]
+    }
+  }
+}
