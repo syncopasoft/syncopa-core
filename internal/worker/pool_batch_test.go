@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"migratool/internal/task"
+	"syncopa/internal/task"
 )
 
 func TestHandleTaskCopyBatch(t *testing.T) {

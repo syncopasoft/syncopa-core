@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"migratool/internal/scanner"
-	"migratool/internal/task"
-	"migratool/internal/worker"
+	"syncopa/internal/scanner"
+	"syncopa/internal/task"
+	"syncopa/internal/worker"
 )
 
 // AutoBatchConfig controls how automatic batching options are exposed to the CLI.

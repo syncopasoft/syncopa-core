@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"migratool/internal/task"
+	"syncopa/internal/task"
 )
 
 // WriteCSV serialises the report details into CSV format. The output contains

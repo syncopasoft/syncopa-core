@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"migratool/internal/task"
-	"migratool/internal/worker"
+	"syncopa/internal/task"
+	"syncopa/internal/worker"
 )
 
 const (

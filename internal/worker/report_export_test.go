@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"migratool/internal/task"
+	"syncopa/internal/task"
 )
 
 func TestReportWriteCSV(t *testing.T) {

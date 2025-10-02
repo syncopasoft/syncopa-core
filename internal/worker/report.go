@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"migratool/internal/task"
+	"syncopa/internal/task"
 )
 
 // TaskReport captures the outcome of processing a single task.

@@ -12,7 +12,7 @@ import (
 
 	"os"
 
-	"migratool/internal/task"
+	"syncopa/internal/task"
 )
 
 func TestScanDeterministicOrderUpdate(t *testing.T) {

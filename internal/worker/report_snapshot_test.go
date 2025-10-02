@@ -3,7 +3,7 @@ package worker
 import (
 	"testing"
 
-	"migratool/internal/task"
+	"syncopa/internal/task"
 )
 
 func TestReportSnapshotRoundTrip(t *testing.T) {
