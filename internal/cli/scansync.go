@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"syncopa/internal/scanner"
-	"syncopa/internal/task"
-	"syncopa/internal/worker"
+	"github.com/syncopasoft/syncopa-core/internal/scanner"
+	"github.com/syncopasoft/syncopa-core/internal/task"
+	"github.com/syncopasoft/syncopa-core/internal/worker"
 )
 
 // AutoBatchConfig controls how automatic batching options are exposed to the CLI.

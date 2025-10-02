@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"syncopa/internal/task"
+	"github.com/syncopasoft/syncopa-core/internal/task"
 )
 
 func TestHandleTaskCopyBatch(t *testing.T) {

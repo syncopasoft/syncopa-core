@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"syncopa/internal/task"
+	"github.com/syncopasoft/syncopa-core/internal/task"
 )
 
 // Snapshot returns a deep copy of the report that can be serialized for

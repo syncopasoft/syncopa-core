@@ -12,7 +12,7 @@ import (
 
 	"os"
 
-	"syncopa/internal/task"
+	"github.com/syncopasoft/syncopa-core/internal/task"
 )
 
 func TestScanDeterministicOrderUpdate(t *testing.T) {

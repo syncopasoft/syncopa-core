@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"syncopa/internal/task"
+	"github.com/syncopasoft/syncopa-core/internal/task"
 )
 
 // Executor processes individual tasks using the same logic as the local worker pool.

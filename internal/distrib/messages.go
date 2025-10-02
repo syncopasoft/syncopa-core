@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"syncopa/internal/task"
-	"syncopa/internal/worker"
+	"github.com/syncopasoft/syncopa-core/internal/task"
+	"github.com/syncopasoft/syncopa-core/internal/worker"
 )
 
 const (

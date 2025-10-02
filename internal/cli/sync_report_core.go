@@ -5,7 +5,7 @@ package cli
 import (
 	"fmt"
 
-	"syncopa/internal/worker"
+	"github.com/syncopasoft/syncopa-core/internal/worker"
 )
 
 func handleSyncReportOutput(report *worker.Report, cfg SyncConfig, _ string, _ string) error {

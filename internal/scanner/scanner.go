@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"syncopa/internal/task"
+	"github.com/syncopasoft/syncopa-core/internal/task"
 )
 
 // Mode controls how source and destination are reconciled.
