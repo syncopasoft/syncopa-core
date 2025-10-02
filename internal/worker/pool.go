@@ -3,7 +3,7 @@ package worker
 import (
 	"sync"
 
-	"migratool/internal/task"
+	"syncopa/internal/task"
 )
 
 // Pool copies files using a set of workers.

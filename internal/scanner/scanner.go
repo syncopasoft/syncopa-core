@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"migratool/internal/task"
+	"syncopa/internal/task"
 )
 
 // Mode controls how source and destination are reconciled.

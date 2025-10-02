@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"migratool/internal/task"
+	"syncopa/internal/task"
 )
 
 // Executor processes individual tasks using the same logic as the local worker pool.
